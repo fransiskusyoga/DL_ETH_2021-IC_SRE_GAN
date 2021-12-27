@@ -147,8 +147,10 @@ def discriminator_loss(netD, real_imgs, fake_imgs, conditions,
     #w_result = word_level_correlation(region_features_real, w_words_embs, wrong_caps_len,
     #                                        batch_size, wrong_cls_id, fake_labels, word_labels)
 
-    result = word_level_correlation(region_features_real, words_embs,
-                                        cap_lens, batch_size, class_ids, real_labels, word_labels)
+    #result = word_level_correlation(region_features_real, words_embs,
+    #                                    cap_lens, batch_size, class_ids, real_labels, word_labels)
+
+    result = sharp_loss(fake_imgs)
 
     errD += result
 
@@ -253,3 +255,24 @@ def word_level_correlation(img_features, words_emb,
     return result
 
 
+def sharp_loss(img, gamma = 1, iter=5):
+    laplacian_filter = torch.FloatTensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]]).view(1, 1, 3, 3).to(img.device)
+    out = torch.mean(img,dim=1).unsqueeze(1)
+    out = F.pad(out,(1,1,1,1),mode='replicate')
+    out = F.conv2d(input=out, weight=Variable(laplacian_filter), stride=1, padding=0)
+    out = torch.abs(out)
+
+    # generate the mask using 
+    with torch.no_grad():
+        val = torch.mean(out,dim=[1,2,3])
+        for i in range(iter):
+            mask = out>val[:,None,None,None]
+            m1 = torch.mean(out*mask,dim=[1,2,3])
+            mask = torch.logical_not(mask)
+            m2 = torch.mean(out*mask,dim=[1,2,3])
+            val = (m1+m2)/2.0
+        
+        mask = 1.0 *  (out>val[:,None,None,None])
+    
+    out = torch.tanh(out*gamma)
+    return F.binary_cross_entropy(out, mask)
