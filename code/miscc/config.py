@@ -40,6 +40,7 @@ __C.TRAIN.NET_G = ''
 __C.TRAIN.NET_C = ''
 __C.TRAIN.NET_D = ''
 __C.TRAIN.B_NET_D = True
+__C.TRAIN.MASK_HIST = False
 
 __C.TRAIN.SMOOTH = edict()
 __C.TRAIN.SMOOTH.GAMMA1 = 5.0
