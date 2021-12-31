@@ -60,6 +60,13 @@ class condGANTrainer(object):
         self.num_batches = len(self.data_loader)  # n_images / batch_size ??
 
         self.fid_calc = FidCalculater(n_file=self.data_loader.dataset.number_example)
+        
+    def create_sentence(self, sent, ixtoword):
+        word_sent = []
+        for wordidx in sent:
+            word_sent.append(ixtoword[wordidx])
+            
+        return ' '.join(word_sent)
 
     def build_models(self):
         # ###################encoders######################################## #
@@ -543,7 +550,7 @@ class condGANTrainer(object):
                         im = im.astype(np.uint8)
                         im = np.transpose(im, (1, 2, 0))
                         im = Image.fromarray(im)
-                        fullpath = '%s_s%d.png' % (s_tmp, idx)
+                        fullpath = '%s_s%d_%s.png' % (s_tmp, idx, self.create_sentence(captions.cpu().detach().numpy()[j], self.ixtoword))
                         im.save(fullpath)
 
 
