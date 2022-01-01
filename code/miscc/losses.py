@@ -147,10 +147,10 @@ def discriminator_loss(netD, real_imgs, fake_imgs, conditions,
     #w_result = word_level_correlation(region_features_real, w_words_embs, wrong_caps_len,
     #                                        batch_size, wrong_cls_id, fake_labels, word_labels)
 
-    #result = word_level_correlation(region_features_real, words_embs,
-    #                                    cap_lens, batch_size, class_ids, real_labels, word_labels)
+    result = word_level_correlation(region_features_real, words_embs,
+                                        cap_lens, batch_size, class_ids, real_labels, word_labels)
 
-    result = sharp_loss(fake_imgs)
+    #result = sharp_loss(fake_imgs)
 
     errD += result
 
