@@ -20,6 +20,7 @@ TRAIN:
     SNAPSHOT_INTERVAL: 5
     DISCRIMINATOR_LR: 0.0002
     GENERATOR_LR: 0.0002
+    MASK_HIST: False
     #
     NET_E: '../DAMSMencoders/bird/text_encoder.pth'
     SMOOTH:
