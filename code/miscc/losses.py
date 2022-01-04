@@ -147,11 +147,11 @@ def discriminator_loss(netD, real_imgs, fake_imgs, conditions,
     #w_result = word_level_correlation(region_features_real, w_words_embs, wrong_caps_len,
     #                                        batch_size, wrong_cls_id, fake_labels, word_labels)
 
-    result = word_level_correlation(region_features_real, words_embs,
-                                        cap_lens, batch_size, class_ids, real_labels, word_labels)
+    #result = word_level_correlation(region_features_real, words_embs,
+    #                                    cap_lens, batch_size, class_ids, real_labels, word_labels)
 
-    #result = sharp_loss(fake_imgs)
-
+    result = 0 # sharpness_loss(fake_imgs)
+    
     errD += result
 
     return errD, result
@@ -254,25 +254,50 @@ def word_level_correlation(img_features, words_emb,
 
     return result
 
-
-def sharp_loss(img, gamma = 1, iter=5):
-    laplacian_filter = torch.FloatTensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]]).view(1, 1, 3, 3).to(img.device)
-    out = torch.mean(img,dim=1).unsqueeze(1)
-    out = F.pad(out,(1,1,1,1),mode='replicate')
-    out = F.conv2d(input=out, weight=Variable(laplacian_filter), stride=1, padding=0)
-    out = torch.abs(out)
-
-    # generate the mask using 
-    with torch.no_grad():
-        val = torch.mean(out,dim=[1,2,3])
-        for i in range(iter):
-            mask = out>val[:,None,None,None]
-            m1 = torch.mean(out*mask,dim=[1,2,3])
-            mask = torch.logical_not(mask)
-            m2 = torch.mean(out*mask,dim=[1,2,3])
-            val = (m1+m2)/2.0
-        
-        mask = 1.0 *  (out>val[:,None,None,None])
+def sharpness_loss(img, percent_grad=0.4, gamma=1, kmean_step = 5):
+    laplacian_filter = torch.FloatTensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]]).view(1, 1, 3, 3).cuda()
     
-    out = torch.tanh(out*gamma)
-    return F.binary_cross_entropy(out, mask)
+    diff = torch.mean(img,dim=1).unsqueeze(1) #rgb to greyscale
+    diff = torch.nn.functional.pad(diff,(1,1,1,1),mode='replicate')
+    diff = torch.nn.functional.conv2d(input=diff, weight=Variable(laplacian_filter), stride=1, padding=0) # the gradient image
+    diff = torch.abs(diff)
+    batch_size = diff.size(0)
+
+    # # method 1
+    # with torch.no_grad():
+    #     caculate the threshold
+    #     cum_val,_ = torch.sort(diff.view(batch_size,-1), dim=1, descending=True) # sorting
+    #     cum_val = torch.cumsum(cum_val,dim=1)
+    #     cum_val = cum_val/(cum_val[:,-1].unsqueeze(1))
+    #     thrs_idx = torch.sum(cum_val<percent_grad, dim=1)
+    #     thrs = cum_val[np.arange(batch_size), thrs_idx]
+    # 
+    # diff = torch.tanh(gamma*diff) # activation function to settle the value 
+    # target = torch.ones_like(diff)
+    # loss = torch.sum(F.binary_cross_entropy(diff,target,reduction='none')*high_grad)/n_high_grad
+    
+    # method 2
+    with torch.no_grad():
+        thrs = torch.mean(diff.view(batch_size,-1), dim=1)
+        for i in range(kmean_step):
+            mask = diff>thrs[:,None,None,None]
+            m1 = torch.sum(diff*mask,dim=[1,2,3])/torch.sum(mask,dim=[1,2,3])
+            mask = torch.logical_not(mask)
+            m2 = torch.sum(diff*mask,dim=[1,2,3])/torch.sum(mask,dim=[1,2,3])
+            thrs = (m1+m2)/2.0
+          
+        # get the mask indicating high gradient value
+        high_grad = diff>thrs[:,None,None,None]
+        n_high_grad = torch.sum(high_grad)
+    
+    diff = torch.tanh(gamma*diff) # activation function to settle the value 
+    target = torch.ones_like(diff)
+    loss = torch.sum(F.binary_cross_entropy(diff,target,reduction='none')*high_grad)/n_high_grad
+    
+    # # method 3
+    # with torch.no_grad():
+        # target = torch.tanh(diff*10)
+    # loss = F.binary_cross_entropy(diff,target,reduction='mean')
+        
+    return loss
+
