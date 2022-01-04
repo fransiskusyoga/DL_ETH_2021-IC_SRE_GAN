@@ -8,6 +8,20 @@ from attention import func_attention
 import torch.nn.functional as F
 import torchvision.models as models
 from torch.autograd import Variable
+
+
+def blurring(img, k_size=5, s=1, pad=2):
+    k_size = 9  # 7
+    pad= 4  # 3
+    _blur_filter = torch.ones([3, 3, k_size, k_size]).to('cuda')
+    blur_filter = _blur_filter.view(3, 3, k_size, k_size) / (k_size**2 * 3)  # first element is output ch. https://pytorch.org/docs/stable/generated/torch.nn.functional.conv2d.html
+    # gray = getGrayImage(img)
+    out = torch.nn.functional.conv2d(input=img,
+                                    weight=Variable(blur_filter),
+                                    stride=s,
+                                    padding=pad)
+    return out
+
 # ##################Loss for matching text-image###################
 def cosine_similarity(x1, x2, dim=1, eps=1e-8):
     """Returns cosine similarity between x1 and x2, computed along dim.
@@ -116,15 +130,24 @@ def words_loss(img_features, words_emb, labels,
 # ##################Loss for G and Ds##############################
 def discriminator_loss(netD, real_imgs, fake_imgs, conditions,
                        real_labels, fake_labels, words_embs, cap_lens, image_encoder, class_ids,
-                        w_words_embs, wrong_caps_len, wrong_cls_id, word_labels):
+                        w_words_embs, wrong_caps_len, wrong_cls_id, word_labels, epoch, cfg):
     
-    real_features = netD(real_imgs)
-    fake_features = netD(fake_imgs.detach())
+    real_features = netD(real_imgs, epoch)  # shape: [10, 512, 4, 4]
+    fake_features = netD(fake_imgs.detach(), epoch)
+
     
-    cond_real_logits = netD.COND_DNET(real_features, conditions)
+    cond_real_logits = netD.COND_DNET(real_features, conditions)  # shape : [10]
     cond_real_errD = nn.BCELoss()(cond_real_logits, real_labels)
     cond_fake_logits = netD.COND_DNET(fake_features, conditions)
     cond_fake_errD = nn.BCELoss()(cond_fake_logits, fake_labels)
+    # ------ blurr real image loss ------
+    if cfg.TRAIN.USE_BLUR_REAL_IMAGE:
+        blurred_real_img = blurring(real_imgs)
+        blur_real_features = netD(blurred_real_img, epoch)
+        # print("what is conditions??")
+        cond_blurred_real_logits  = netD.COND_DNET(blur_real_features, conditions)  # conditions is sentence embeddings
+        cond_blurred_real_errD = nn.BCELoss()(cond_blurred_real_logits, fake_labels)
+    # ------------- done ----------------
     #
     batch_size = real_features.size(0)
     cond_wrong_logits = netD.COND_DNET(real_features[:(batch_size - 1)], conditions[1:batch_size])
@@ -135,10 +158,20 @@ def discriminator_loss(netD, real_imgs, fake_imgs, conditions,
         fake_logits = netD.UNCOND_DNET(fake_features)
         real_errD = nn.BCELoss()(real_logits, real_labels)
         fake_errD = nn.BCELoss()(fake_logits, fake_labels)
-        errD = ((real_errD + cond_real_errD) / 2. +
-                (fake_errD + cond_fake_errD + cond_wrong_errD) / 3.)
+
+        if cfg.TRAIN.USE_BLUR_REAL_IMAGE:
+            errD = ((real_errD + cond_real_errD) / 2. +
+                (fake_errD + cond_fake_errD + cond_wrong_errD) / 3.)  + cond_blurred_real_errD
+        else:
+            errD = ((real_errD + cond_real_errD) / 2. +
+                (fake_errD + cond_fake_errD + cond_wrong_errD) / 3.)  # original
     else:
-        errD = cond_real_errD + (cond_fake_errD + cond_wrong_errD) / 2.
+
+        if cfg.TRAIN.USE_BLUR_REAL_IMAGE:
+            errD = cond_real_errD + (cond_fake_errD + cond_wrong_errD) / 2. + cond_blurred_real_errD
+        else:
+            errD = cond_real_errD + (cond_fake_errD + cond_wrong_errD) / 2.  # original
+
 
 
     region_features_real, cnn_code_real = image_encoder(real_imgs)
@@ -149,6 +182,9 @@ def discriminator_loss(netD, real_imgs, fake_imgs, conditions,
 
     result = word_level_correlation(region_features_real, words_embs,
                                         cap_lens, batch_size, class_ids, real_labels, word_labels)
+    
+    # # UNCOMMENT HERE to activate NSL
+    # result = sharpness_loss(fake_imgs)
 
     errD += result
 
@@ -157,7 +193,7 @@ def discriminator_loss(netD, real_imgs, fake_imgs, conditions,
 
 def generator_loss(netsD, image_encoder, fake_imgs, real_labels,
                    words_embs, sent_emb, match_labels,
-                   cap_lens, class_ids, style_loss, real_imgs):
+                   cap_lens, class_ids, style_loss, real_imgs, epoch):
     numDs = len(netsD)
     batch_size = real_labels.size(0)
     logs = ''
@@ -166,7 +202,7 @@ def generator_loss(netsD, image_encoder, fake_imgs, real_labels,
     feature_loss = 0
     ## numDs: 3
     for i in range(numDs):
-        features = netsD[i](fake_imgs[i])
+        features = netsD[i](fake_imgs[i], epoch)
         cond_logits = netsD[i].COND_DNET(features, sent_emb)
         cond_errG = nn.BCELoss()(cond_logits, real_labels)
         if netsD[i].UNCOND_DNET is  not None:
@@ -217,6 +253,12 @@ def KL_loss(mu, logvar):
     KLD = torch.mean(KLD_element).mul_(-0.5)
     return KLD
 
+##################################################################
+
+def M_loss(real, fake, mask):
+    m_loss = torch.mean((torch.abs(real - fake))*mask) * 25
+    return m_loss
+
 
 ##################################################################
 
@@ -253,3 +295,50 @@ def word_level_correlation(img_features, words_emb,
     return result
 
 
+
+def sharpness_loss(img, percent_grad=0.4, gamma=1, kmean_step = 5):
+    laplacian_filter = torch.FloatTensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]]).view(1, 1, 3, 3).cuda()
+    
+    diff = torch.mean(img,dim=1).unsqueeze(1) #rgb to greyscale
+    diff = torch.nn.functional.pad(diff,(1,1,1,1),mode='replicate')
+    diff = torch.nn.functional.conv2d(input=diff, weight=Variable(laplacian_filter), stride=1, padding=0) # the gradient image
+    diff = torch.abs(diff)
+    batch_size = diff.size(0)
+
+    # # method 1
+    # with torch.no_grad():
+    #     caculate the threshold
+    #     cum_val,_ = torch.sort(diff.view(batch_size,-1), dim=1, descending=True) # sorting
+    #     cum_val = torch.cumsum(cum_val,dim=1)
+    #     cum_val = cum_val/(cum_val[:,-1].unsqueeze(1))
+    #     thrs_idx = torch.sum(cum_val<percent_grad, dim=1)
+    #     thrs = cum_val[np.arange(batch_size), thrs_idx]
+    # 
+    # diff = torch.tanh(gamma*diff) # activation function to settle the value 
+    # target = torch.ones_like(diff)
+    # loss = torch.sum(F.binary_cross_entropy(diff,target,reduction='none')*high_grad)/n_high_grad
+    
+    # method 2
+    with torch.no_grad():
+        thrs = torch.mean(diff.view(batch_size,-1), dim=1)
+        for i in range(kmean_step):
+            mask = diff>thrs[:,None,None,None]
+            m1 = torch.sum(diff*mask,dim=[1,2,3])/torch.sum(mask,dim=[1,2,3])
+            mask = torch.logical_not(mask)
+            m2 = torch.sum(diff*mask,dim=[1,2,3])/torch.sum(mask,dim=[1,2,3])
+            thrs = (m1+m2)/2.0
+          
+        # get the mask indicating high gradient value
+        high_grad = diff>thrs[:,None,None,None]
+        n_high_grad = torch.sum(high_grad)
+    
+    diff = torch.tanh(gamma*diff) # activation function to settle the value 
+    target = torch.ones_like(diff)
+    loss = torch.sum(F.binary_cross_entropy(diff,target,reduction='none')*high_grad)/n_high_grad
+    
+    # # method 3
+    # with torch.no_grad():
+        # target = torch.tanh(diff*10)
+    # loss = F.binary_cross_entropy(diff,target,reduction='mean')
+        
+    return loss
