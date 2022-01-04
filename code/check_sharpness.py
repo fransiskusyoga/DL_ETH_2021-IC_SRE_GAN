@@ -5,14 +5,15 @@ import numpy as np
 
 if __name__=="__main__":
     laplacian_filter = torch.FloatTensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]]).view(1, 1, 3, 3)
-    dirname = '../output/valid'
+    dirname = '../output/netG_epoch_100_ori/valid'
     n_files = [name for name in os.listdir(dirname) if os.path.isfile(os.path.join(dirname,name))]
     sharpness = torch.zeros(len(n_files))
+    print("number of files is {}".format(len(n_files)))
     for i,filename in enumerate(os.listdir(dirname)):
         full_filename = os.path.join(dirname, filename)
         if not (os.path.isfile(full_filename)):
             continue
-        if "fake" in full_filename:
+        if "real" in full_filename:
             continue
         with Image.open(full_filename) as imI:
             imNP = np.array(imI)
@@ -26,6 +27,7 @@ if __name__=="__main__":
 
             out = torch.nn.functional.conv2d(input=img, weight=laplacian_filter, stride=1, padding=1)
 
-            sharpness[i] = torch.mean(out)
-    
+            sharpness[i] = torch.mean(torch.abs(out))
+        if (i%1000==0):
+            print(i)
     print(torch.mean(sharpness))
